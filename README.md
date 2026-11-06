@@ -1,11 +1,45 @@
-# Envios Service — Análisis de Métricas de Calidad
+# Envios Service — Diagnóstico y Mejora Guiada por Métricas
 
 Post-contenido de la Unidad 10 de Patrones de Diseño de Software. Proyecto Maven plano
 (Java 21, sin Spring Boot) que calcula el costo de un envío según método de transporte,
-peso, distancia, fragilidad y tipo de cliente. `ServicioCalculoEnvio.calcularCosto()`
-concentra toda la lógica en una cadena de condicionales y la suite de partida solo cubre
-dos caminos. Esta primera parte diagnostica el problema con métricas reales de SonarQube
-y JaCoCo, sin corregir nada todavía.
+peso, distancia, fragilidad y tipo de cliente. En la versión original,
+`ServicioCalculoEnvio.calcularCosto()` concentraba toda la lógica en una cadena de
+condicionales, y la suite de partida solo cubría dos caminos. La Parte 1 diagnostica el
+problema con métricas reales de SonarQube y JaCoCo; la Parte 2 lo corrige con Strategy y
+pruebas significativas, y lo verifica con un Quality Gate propio.
+
+## Resultado
+
+| Métrica | Antes | Después |
+|---|---|---|
+| Complejidad ciclomática de calcularCosto() | 20 | 5 (−75%) |
+| Cobertura de ramas | 18.4% | 100% (+81.6 puntos) |
+| Code Smells con "Estándar Laboratorio" | 1 | 0 |
+| Duplicación | 0.0% | 0.0% |
+| Quality Gate "Estándar Laboratorio" | Failed | Passed |
+
+## Decisiones de diseño
+1. **Entorno de análisis: SonarQube local con Docker.** Es la única opción que permite
+   crear el Quality Profile y el Quality Gate propios que exige el Paso 9; además no
+   depende de conectividad ni de cuotas. [Detalle](#entorno-de-análisis)
+2. **Exclusiones: ninguna.** Todo `src/main/java` es lógica de negocio, sin `Main` ni código
+   generado. [Detalle](#exclusiones-del-análisis)
+3. **Señal principal: complejidad ciclomática.** Cuenta caminos independientes, explica la
+   cobertura baja y es la métrica que limita S1541. [Detalle](#interpretación)
+4. **Patrón: Strategy.** El método no guarda estado (descarta State) ni encadena
+   manejadores con orden relevante (descarta Chain of Responsibility); cada rama calcula un
+   costo con su propia fórmula, elegida una sola vez por `metodoEnvio`.
+   [Detalle](#elección-del-patrón)
+5. **Pruebas: una por cada rama que JaCoCo marcó sin cubrir**, con valores calculados de
+   forma independiente y límites de distancia probados a ambos lados.
+   [Detalle](#pruebas-agregadas)
+6. **Umbrales: CC 10 por método y 70% de cobertura.** CC 10 es el techo de "Moderada" en la
+   Tabla 3.2 de la guía; 100% de cobertura incentivaría pruebas triviales.
+   [Detalle](#quality-gate-estándar-laboratorio)
+
+---
+
+# Parte 1 — Diagnóstico con métricas reales
 
 ## Entorno de análisis
 
@@ -290,9 +324,50 @@ Reporte JaCoCo final: 100% de instrucciones y ramas.
 ![JaCoCo final](docs/jacoco-final.png)
 ![JaCoCo final, paquete estrategia](docs/jacoco-final-estrategias.png)
 
+---
+
 ## Ejecutar el análisis
 ```bash
+# 1. Levantar SonarQube local (esperar "SonarQube is operational" en docker logs)
 docker run -d --name sonarqube -p 9000:9000 \
   -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true sonarqube:community
-mvn clean verify sonar:sonar -Dsonar.token=TU_TOKEN
+
+# 2. Pruebas + reporte JaCoCo (target/site/jacoco/index.html)
+mvn clean verify
+
+# 3. Análisis (token generado en My Account → Security)
+mvn sonar:sonar -Dsonar.token=TU_TOKEN
 ```
+
+## Estructura
+```
+src/main/java/com/universidad/enviosservice/
+├── service/ServicioCalculoEnvio.java      orquestador: selección + ajustes transversales (CC 5)
+└── estrategia/
+    ├── EstrategiaEnvio.java               interfaz Strategy
+    ├── EnvioEstandarStrategy.java         tarifa + recargo > 500 km
+    ├── EnvioExpressStrategy.java          tarifa + recargo > 500 km, factor 1.3
+    ├── EnvioOvernightStrategy.java        máximo 300 km + tarifa
+    ├── EnvioInternacionalStrategy.java    tarifa + recargo > 5000 km
+    └── TarifaPorTramos.java               fórmula por tramos de peso compartida
+src/test/java/com/universidad/enviosservice/
+├── service/ServicioCalculoEnvioTest.java  orquestador: delegación, fragilidad, clientes, errores
+└── estrategia/*StrategyTest.java          tramos de peso y límites de distancia
+```
+
+## Herramientas utilizadas
+- Java 21, Apache Maven 3.9, JUnit 5.13 (con `junit-jupiter-params`)
+- SonarQube Community Build 26.11 en Docker, SonarScanner for Maven 5.8, JaCoCo 0.8.16
+- Git, GitHub
+
+## Conclusiones
+Las métricas sirvieron para decidir, no solo para describir. La complejidad ciclomática de
+20 explicó por qué dos pruebas dejaban más del 80% de las ramas sin cubrir, y justificó
+rediseñar antes de escribir más pruebas. El perfil por defecto de SonarQube no reportaba
+nada sobre ese método: hizo falta un Quality Profile propio con S1541 para que el problema
+apareciera como Code Smell, lo que muestra que un dashboard en verde depende de qué reglas
+están activas. La elección de Strategy salió de analizar la naturaleza de los
+condicionales (sin estado y sin orden entre ramas), y el Quality Gate demostró su valor al
+detectar una duplicación real que el primer refactor había dejado entre dos estrategias.
+Al final, la complejidad del método bajó un 75% y la cobertura de ramas subió de 18.4% a
+100% con pruebas que verifican valores concretos y límites, no solo líneas ejecutadas.
